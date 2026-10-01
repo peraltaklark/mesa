@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <time.h>
 
 #include "wrapper_log.h"
@@ -30,22 +31,30 @@ static void get_formatted_date_time(char *buf, size_t length)
 }
 
 char *get_executable_name() {
-   char *path = malloc(PATH_MAX);
+   char buf[PATH_MAX_SIZE];
+   ssize_t n = 0;
 
-   int fd = open("/proc/self/cmdline", O_RDONLY);
+   int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
 
    if (fd != -1) {
-      read(fd, path, PATH_MAX_SIZE);
-      char *ptr = strrchr(path, '/');
-      if (ptr)
-         path = ptr + 1;
-      ptr = strrchr(path, '\\');
-      if (ptr)
-         path = ptr + 1;
+      n = read(fd, buf, sizeof(buf) - 1);
       close(fd);
    }
-   
-   return path;
+   if (n < 0)
+      n = 0;
+   buf[n] = 0;
+
+   const char *name = buf;
+   const char *ptr = strrchr(name, '/');
+   if (ptr)
+      name = ptr + 1;
+   ptr = strrchr(name, '\\');
+   if (ptr)
+      name = ptr + 1;
+
+   /* Always a valid, separately allocated string. */
+   char *ret = strdup(name[0] ? name : "unknown");
+   return ret;
 }
 
 static unsigned long long get_debug_flag(const char *option) {

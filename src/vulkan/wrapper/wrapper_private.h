@@ -71,6 +71,10 @@ struct wrapper_device {
 
    VkDevice dispatch_handle;
    simple_mtx_t resource_mutex;
+   /* Host mappings of driver VkDeviceMemory, by handle: the ones the app made
+    * (so BCn uploads read through them) and the temporary ones we make. */
+   simple_mtx_t host_map_mutex;
+   struct hash_table_u64 *host_map_table;
    struct list_head command_buffer_list;
    struct list_head device_memory_list;
    struct list_head buffer_list;
@@ -147,6 +151,36 @@ struct wrapper_buffer {
    VkDeviceSize bcn_inflight;
    VkExternalMemoryHandleTypeFlags handle_types;
 };
+
+/* Host mapping bookkeeping (wrapper_device_memory.c). vkMapMemory on memory that
+ * is already mapped is invalid and vkUnmapMemory would tear down the app's own
+ * (often persistent) mapping, so the BCn upload asks here first. */
+void
+wrapper_host_map_note(struct wrapper_device *device, VkDeviceMemory memory,
+                      VkDeviceSize offset, VkDeviceSize size, void *ptr);
+void
+wrapper_host_map_forget(struct wrapper_device *device, VkDeviceMemory memory);
+/* Pointer to byte `offset` of `memory`, valid for `size` bytes. Reuses the
+ * app's mapping when it covers the range, else maps temporarily. Every true
+ * return must be paired with wrapper_host_map_release(). */
+bool
+wrapper_host_map_acquire(struct wrapper_device *device, VkDeviceMemory memory,
+                         VkDeviceSize offset, VkDeviceSize size, void **ptr);
+void
+wrapper_host_map_release(struct wrapper_device *device, VkDeviceMemory memory);
+
+/* Used instead of the plain trampolines when VK_EXT_map_memory_placed is off,
+ * so app mappings are still tracked. */
+VKAPI_ATTR VkResult VKAPI_CALL
+wrapper_MapMemory2_tracked(VkDevice device, const VkMemoryMapInfoKHR *info,
+                           void **ppData);
+VKAPI_ATTR VkResult VKAPI_CALL
+wrapper_UnmapMemory2_tracked(VkDevice device, const VkMemoryUnmapInfoKHR *info);
+VKAPI_ATTR void VKAPI_CALL
+wrapper_UnmapMemory_tracked(VkDevice device, VkDeviceMemory memory);
+VKAPI_ATTR void VKAPI_CALL
+wrapper_FreeMemory_tracked(VkDevice device, VkDeviceMemory memory,
+                           const VkAllocationCallbacks *pAllocator);
 
 struct wrapper_buffer *
 get_wrapper_buffer_from_handle_locked(struct wrapper_device *device, VkBuffer buffer);

@@ -667,14 +667,164 @@ wrapper_FreeMemory(VkDevice _device, VkDeviceMemory _memory,
 
    mem = wrapper_device_memory_from_handle(device, _memory);
    if (mem) {
+      wrapper_host_map_forget(device, _memory);
       mem->alloc = pAllocator;
       return wrapper_device_memory_destroy(mem);
    }
 
-   device->dispatch_table.FreeMemory(device->dispatch_handle,
-                                     _memory,
-                                     pAllocator);
+   wrapper_FreeMemory_tracked(_device, _memory, pAllocator);
 }
+
+/* ---- host mapping bookkeeping ------------------------------------------- */
+struct wrapper_host_map {
+   void *ptr;            /* host address of memory byte `offset` */
+   VkDeviceSize offset;
+   VkDeviceSize size;    /* VK_WHOLE_SIZE: to the end of the allocation */
+   bool app;             /* made by the app (else: temporary, ours) */
+   int refs;             /* ours only */
+};
+
+void
+wrapper_host_map_note(struct wrapper_device *device, VkDeviceMemory memory,
+                      VkDeviceSize offset, VkDeviceSize size, void *ptr)
+{
+   if (!device->host_map_table || !ptr)
+      return;
+   simple_mtx_lock(&device->host_map_mutex);
+   struct wrapper_host_map *m =
+      _mesa_hash_table_u64_search(device->host_map_table, (uint64_t)memory);
+   if (!m) {
+      m = calloc(1, sizeof(*m));
+      if (m)
+         _mesa_hash_table_u64_insert(device->host_map_table, (uint64_t)memory, m);
+   }
+   if (m) {
+      /* If a temporary mapping of ours was live the app's now supersedes it. */
+      m->ptr = ptr;
+      m->offset = offset;
+      m->size = size;
+      m->app = true;
+      m->refs = 0;
+   }
+   simple_mtx_unlock(&device->host_map_mutex);
+}
+
+void
+wrapper_host_map_forget(struct wrapper_device *device, VkDeviceMemory memory)
+{
+   if (!device->host_map_table)
+      return;
+   simple_mtx_lock(&device->host_map_mutex);
+   struct wrapper_host_map *m =
+      _mesa_hash_table_u64_search(device->host_map_table, (uint64_t)memory);
+   if (m && m->app) {
+      _mesa_hash_table_u64_remove(device->host_map_table, (uint64_t)memory);
+      free(m);
+   }
+   simple_mtx_unlock(&device->host_map_mutex);
+}
+
+bool
+wrapper_host_map_acquire(struct wrapper_device *device, VkDeviceMemory memory,
+                         VkDeviceSize offset, VkDeviceSize size, void **ptr)
+{
+   bool ok = false;
+
+   simple_mtx_lock(&device->host_map_mutex);
+   struct wrapper_host_map *m =
+      _mesa_hash_table_u64_search(device->host_map_table, (uint64_t)memory);
+
+   if (m && m->app) {
+      /* Already mapped by the app: read through that mapping if it covers us. */
+      bool covers = offset >= m->offset;
+      if (covers && m->size != VK_WHOLE_SIZE) {
+         covers = size != VK_WHOLE_SIZE &&
+                  offset - m->offset <= m->size &&
+                  size <= m->size - (offset - m->offset);
+      }
+      if (covers) {
+         *ptr = (char *)m->ptr + (offset - m->offset);
+         ok = true;
+         /* No release needed; wrapper_host_map_release ignores app mappings. */
+      }
+   } else if (m) {
+      m->refs++;
+      *ptr = (char *)m->ptr + offset;
+      ok = true;
+   } else {
+      void *base = NULL;
+      /* Whole memory from 0, so any buffer on it can share the mapping. */
+      if (device->dispatch_table.MapMemory(device->dispatch_handle, memory, 0,
+                                           VK_WHOLE_SIZE, 0, &base) == VK_SUCCESS) {
+         m = calloc(1, sizeof(*m));
+         if (m) {
+            m->ptr = base;
+            m->size = VK_WHOLE_SIZE;
+            m->refs = 1;
+            _mesa_hash_table_u64_insert(device->host_map_table, (uint64_t)memory, m);
+            *ptr = (char *)base + offset;
+            ok = true;
+         } else {
+            device->dispatch_table.UnmapMemory(device->dispatch_handle, memory);
+         }
+      }
+   }
+   simple_mtx_unlock(&device->host_map_mutex);
+   return ok;
+}
+
+void
+wrapper_host_map_release(struct wrapper_device *device, VkDeviceMemory memory)
+{
+   simple_mtx_lock(&device->host_map_mutex);
+   struct wrapper_host_map *m =
+      _mesa_hash_table_u64_search(device->host_map_table, (uint64_t)memory);
+   if (m && !m->app && --m->refs <= 0) {
+      device->dispatch_table.UnmapMemory(device->dispatch_handle, memory);
+      _mesa_hash_table_u64_remove(device->host_map_table, (uint64_t)memory);
+      free(m);
+   }
+   simple_mtx_unlock(&device->host_map_mutex);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+wrapper_MapMemory2_tracked(VkDevice _device, const VkMemoryMapInfoKHR *info,
+                           void **ppData)
+{
+   VK_FROM_HANDLE(wrapper_device, device, _device);
+   VkResult res = device->dispatch_table.MapMemory(device->dispatch_handle,
+      info->memory, info->offset, info->size, 0, ppData);
+   if (res == VK_SUCCESS)
+      wrapper_host_map_note(device, info->memory, info->offset, info->size, *ppData);
+   return res;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+wrapper_UnmapMemory2_tracked(VkDevice _device, const VkMemoryUnmapInfoKHR *info)
+{
+   VK_FROM_HANDLE(wrapper_device, device, _device);
+   wrapper_host_map_forget(device, info->memory);
+   device->dispatch_table.UnmapMemory(device->dispatch_handle, info->memory);
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_UnmapMemory_tracked(VkDevice _device, VkDeviceMemory memory)
+{
+   VK_FROM_HANDLE(wrapper_device, device, _device);
+   wrapper_host_map_forget(device, memory);
+   device->dispatch_table.UnmapMemory(device->dispatch_handle, memory);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+wrapper_FreeMemory_tracked(VkDevice _device, VkDeviceMemory memory,
+                           const VkAllocationCallbacks *pAllocator)
+{
+   VK_FROM_HANDLE(wrapper_device, device, _device);
+   wrapper_host_map_forget(device, memory);
+   device->dispatch_table.FreeMemory(device->dispatch_handle, memory, pAllocator);
+}
+
 
 VKAPI_ATTR VkResult VKAPI_CALL
 wrapper_MapMemory2KHR(VkDevice _device,
@@ -692,11 +842,8 @@ wrapper_MapMemory2KHR(VkDevice _device,
          MEMORY_MAP_PLACED_INFO_EXT);
    
    mem = wrapper_device_memory_from_handle(device, pMemoryMapInfo->memory);
-   if (!placed_info || !mem) {
-      return device->dispatch_table.MapMemory(device->dispatch_handle,
-         pMemoryMapInfo->memory, pMemoryMapInfo->offset, pMemoryMapInfo->size,
-            0, ppData);
-   }
+   if (!placed_info || !mem)
+      return wrapper_MapMemory2_tracked(_device, pMemoryMapInfo, ppData);
 
    WRAPPER_LOG(info, "Emulating vkMapMemory2KHR");
 
@@ -794,11 +941,8 @@ wrapper_UnmapMemory2KHR(VkDevice _device,
    struct wrapper_device_memory *mem;
 
    mem = wrapper_device_memory_from_handle(device, pMemoryUnmapInfo->memory);
-   if (!mem) {
-      device->dispatch_table.UnmapMemory(device->dispatch_handle,
-         pMemoryUnmapInfo->memory);
-      return VK_SUCCESS;
-   }
+   if (!mem)
+      return wrapper_UnmapMemory2_tracked(_device, pMemoryUnmapInfo);
 
    WRAPPER_LOG(info, "Emulating vkUnmapMemory2KHR");
 

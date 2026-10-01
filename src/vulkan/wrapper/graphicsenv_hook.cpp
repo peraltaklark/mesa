@@ -6,9 +6,11 @@
 
 #include "graphicsenv_hook.hpp"
 #include "wrapper_log.h"
+#include "wrapper_util.h"
 
 #define LIBNAME "/system/lib64/libgraphicsenv.so"
-#define WRAPPER_LAYERS_PATH "/data/data/com.winlator.cmod/files/imagefs/usr/lib:/data/data/com.termux/files/usr/lib"
+/* Extra places to look after the lib dir of the imagefs this wrapper runs in. */
+#define WRAPPER_EXTRA_LAYERS_PATH "/data/data/com.termux/files/usr/lib"
 
 static void *graphicsenv_handle = nullptr;
 static std::string env_layers_path;
@@ -56,8 +58,11 @@ bool set_layer_paths() {
       const char *env = getenv("WRAPPER_LAYER_PATH");
       if (env)
          env_layers_path = env;
-      if (env_layers_path.empty())
-         env_layers_path = WRAPPER_LAYERS_PATH;
+      if (env_layers_path.empty()) {
+         /* <imagefs>/usr/lib of whatever application id we run under. */
+         env_layers_path = std::string(wrapper_imagefs_dir()) + "/usr/lib:" +
+                           WRAPPER_EXTRA_LAYERS_PATH;
+      }
    }
 
    setLayerPaths(instance, app_namespace, env_layers_path);

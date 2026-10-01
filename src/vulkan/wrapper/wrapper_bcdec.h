@@ -66,11 +66,11 @@ bcn_upload_enabled(void);
 
 void
 bcn_cache_note_source(void *srcBuffer, int w, int h, int src_w,
-                      VkFormat format, int offset);
+                      VkFormat format, size_t offset);
 
 void *
 bcn_cache_gpu_lookup(void *srcBuffer, int w, int h, int src_w, VkFormat format,
-                     int offset, size_t *size);
+                     size_t offset, size_t *size);
 
 void
 decompress_bcn_format(void *srcBuffer,
@@ -79,6 +79,6 @@ decompress_bcn_format(void *srcBuffer,
                       int h,
                       int src_w,
                       VkFormat format,
-                      int offset);
+                      size_t offset);
 
 #endif
