@@ -15,7 +15,7 @@ wsi_get_ahardware_buffer_blit_type(const struct wsi_device *wsi,
 {
    AHardwareBuffer *ahardware_buffer;
    VkResult result;
-   uint32_t probe_format = wsi->emulate_bgra8
+   uint32_t probe_format = (wsi->emulate_bgra8 || wsi->force_rgba8_unorm_first)
          ? AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM
          : AHARDWAREBUFFER_FORMAT_B8G8R8A8_UNORM;
    

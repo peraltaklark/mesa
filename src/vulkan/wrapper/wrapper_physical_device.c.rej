@@ -1,0 +1,24 @@
+--- src/vulkan/wrapper/wrapper_physical_device.c	2026-10-06 11:35:58.141244074 +0000
++++ src/vulkan/wrapper/wrapper_physical_device.c	2026-10-06 11:35:58.143276719 +0000
+@@ -271,6 +271,21 @@
+       }
+       pdevice->vk.wsi_device = &pdevice->wsi_device;
+       pdevice->wsi_device.force_bgra8_unorm_first = true;
++      pdevice->wsi_device.force_rgba8_unorm_first = false;
++
++      const char *wrapper_surface_format = getenv("WRAPPER_SURFACE_FORMAT");
++      if (wrapper_surface_format) {
++         if (!strcmp(wrapper_surface_format, "rgba8")) {
++            pdevice->wsi_device.force_rgba8_unorm_first = true;
++            pdevice->wsi_device.force_bgra8_unorm_first = false;
++            /* Advertise and use native RGBA8 (e.g. Mali): bypass the
++             * emulated-BGRA path, which would otherwise hide RGBA formats. */
++            pdevice->wsi_device.emulate_bgra8 = false;
++         } else if (!strcmp(wrapper_surface_format, "bgra8")) {
++            pdevice->wsi_device.force_rgba8_unorm_first = false;
++            pdevice->wsi_device.force_bgra8_unorm_first = true;
++         }
++      }
+ 
+       pdevice->driver_properties = (VkPhysicalDeviceDriverProperties) {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
