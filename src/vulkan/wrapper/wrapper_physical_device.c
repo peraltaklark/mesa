@@ -271,6 +271,18 @@ VkResult enumerate_physical_device(struct vk_instance *_instance)
       }
       pdevice->vk.wsi_device = &pdevice->wsi_device;
       pdevice->wsi_device.force_bgra8_unorm_first = true;
+      pdevice->wsi_device.force_rgba8_unorm_first = false;
+
+      const char *wrapper_surface_format = getenv("WRAPPER_SURFACE_FORMAT");
+      if (wrapper_surface_format) {
+         if (!strcmp(wrapper_surface_format, "rgba8")) {
+            pdevice->wsi_device.force_rgba8_unorm_first = true;
+            pdevice->wsi_device.force_bgra8_unorm_first = false;
+         } else if (!strcmp(wrapper_surface_format, "bgra8")) {
+            pdevice->wsi_device.force_rgba8_unorm_first = false;
+            pdevice->wsi_device.force_bgra8_unorm_first = true;
+         }
+      }
 
       pdevice->driver_properties = (VkPhysicalDeviceDriverProperties) {
          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
